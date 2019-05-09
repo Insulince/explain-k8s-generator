@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"os/exec"
 	"strings"
 )
 
 func main() {
-	rawOut, err := exec.Command("bash", "-c", "kubectl explain 2>&1 | grep \"*\" | grep -vE \"(all|podpreset|cronjob|customresourcedefinition)\" | cut -c 5- | grep secret").Output()
+	rawOut, err := exec.Command("bash", "-c", "kubectl explain 2>&1 | grep \"*\" | grep -vE \"(all|podpreset|cronjob|customresourcedefinition)\" | cut -c 5- | grep pods").Output()
 	if err != nil {
 		panic(err)
 	}
@@ -118,6 +119,7 @@ func NewResource(name string, resourceString string) Resource {
 }
 
 func ParseFields(nameAcc string, fieldsStr string) []Field {
+	fmt.Println(rand.Float32())
 	var fields []Field
 
 	lines := strings.Split(fieldsStr, "\n")
@@ -148,16 +150,17 @@ func ParseFields(nameAcc string, fieldsStr string) []Field {
 
 			if strings.Index(f.Type, "Object") != -1 {
 				objMode = true
-			} else {
-				rawOut, err := exec.Command("kubectl", "explain", fullName).Output()
-				if err != nil {
-					log.Println(string(rawOut))
-					panic(err)
-				}
-				out := string(rawOut)
-				goodOut := removeBlankLinesStr(out)
-				f.Explanation = goodOut
 			}
+
+			rawOut, err := exec.Command("kubectl", "explain", fullName).Output()
+			if err != nil {
+				log.Println(string(rawOut))
+				panic(err)
+			}
+			out := string(rawOut)
+			goodOut := removeBlankLinesStr(out)
+			description := extractDescription(goodOut)
+			f.Explanation = description
 
 			fields = append(fields, f)
 		} else {
@@ -166,6 +169,28 @@ func ParseFields(nameAcc string, fieldsStr string) []Field {
 	}
 
 	return fields
+}
+
+func extractDescription(explanation string) string {
+	lines := strings.Split(explanation, "\n")
+	simpleField := strings.Index(lines[0], "FIELD: ") == 0
+	lines = lines[2:] // Chop off the initial line (either FIELD or RESOURCE) and the DESCRIPTION line.
+	if simpleField {
+		var slines []string
+		for _, line := range lines {
+			slines = append(slines, line[5:])
+		}
+		return strings.Join(slines, " ")
+	} else {
+		var slines []string
+		for _, line := range lines {
+			if strings.Index(line, "     ") != 0 {
+				return strings.Join(slines, " ")
+			}
+			slines = append(slines, line[5:])
+		}
+	}
+	panic("???")
 }
 
 func Unshift(s string) string {
