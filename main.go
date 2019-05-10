@@ -8,12 +8,14 @@ import (
 	"io/ioutil"
 	"log"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 )
 
 const (
 	resourcesFile = "./resources.txt"
+	outputFile    = "./output.json"
 
 	kubectl   = "kubectl"
 	explain   = "explain"
@@ -44,7 +46,8 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	resourceNames = []string{"secret", "configmap"}
+	// OVERRIDE for if you want to test on your own set of resources
+	// resourceNames = []string{"secret", "configmap"}
 
 	explanationCollector := make(chan Explanation)
 	var wg sync.WaitGroup
@@ -71,14 +74,19 @@ func main() {
 	wg.Wait()
 	fmt.Println("===== DONE EXPLAINING =====")
 
-	data, err := json.Marshal(explanations)
+	sort.Slice(explanations, func(i, j int) bool {
+		return explanations[i].Name < explanations[j].Name
+	})
+
+	explanationsJson, err := json.Marshal(explanations)
 	if err != nil {
 		log.Fatalln(err)
 	}
-	explanationsJson := string(data)
-
-	fmt.Println("JSON result:")
-	fmt.Println(explanationsJson)
+	fmt.Println("JSON result saved to \"" + outputFile + "\".")
+	err = ioutil.WriteFile(outputFile, explanationsJson, 0644)
+	if err != nil {
+		log.Fatalln(err)
+	}
 }
 
 func getK8sExplanation(rn string, recursively bool) (string, error) {
@@ -205,12 +213,6 @@ func ParseFields(nameAcc string, fs string) ([]Explanation, error) {
 			FullName: nameAcc + "." + items[0],
 			Type:     strings.Trim(items[1], "<>"),
 		}
-		fmt.Println(" - " + f.FullName)
-		description, err := getDescription(f.FullName)
-		if err != nil {
-			return nil, err
-		}
-		f.Description = description
 
 		fields = append(fields, f)
 	}
@@ -224,7 +226,39 @@ func ParseFields(nameAcc string, fs string) ([]Explanation, error) {
 		fields[lastFieldIndex].Fields = subFields
 	}
 
-	return fields, nil
+	fieldCollector := make(chan Explanation)
+	var wg sync.WaitGroup
+	wg.Add(len(fields))
+
+	for fi := range fields {
+		go func(fi int) {
+			f := fields[fi]
+			fmt.Println(" - " + f.FullName)
+			description, err := getDescription(f.FullName)
+			if err != nil {
+				// TODO: What should we do about these errors?
+				log.Println(f.FullName, err)
+			}
+			f.Description = description
+			fieldCollector <- f
+		}(fi)
+	}
+
+	var updatedFields []Explanation
+	go func() {
+		for f := range fieldCollector {
+			updatedFields = append(updatedFields, f)
+			wg.Done()
+		}
+	}()
+
+	wg.Wait()
+
+	sort.Slice(updatedFields, func(i, j int) bool {
+		return updatedFields[i].Name < updatedFields[j].Name
+	})
+
+	return updatedFields, nil
 }
 
 func getDescription(fullName string) (string, error) {
