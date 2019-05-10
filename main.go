@@ -9,6 +9,7 @@ import (
 	"log"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 const (
@@ -43,18 +44,31 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	resourceNames = []string{"pod"}
+	resourceNames = []string{"secret", "configmap"}
+
+	explanationCollector := make(chan Explanation)
+	var wg sync.WaitGroup
+	wg.Add(len(resourceNames))
 
 	var explanations []Explanation
 	for _, rn := range resourceNames {
-		// TODO: Concurrency!
-		r, err := NewTopLevelExplanation(rn)
-		if err != nil {
-			log.Fatalln(err)
-		}
-
-		explanations = append(explanations, r)
+		go func(rn string) {
+			e, err := NewTopLevelExplanation(rn)
+			if err != nil {
+				log.Fatalln(err)
+			}
+			explanationCollector <- e
+		}(rn)
 	}
+
+	go func() {
+		for e := range explanationCollector {
+			explanations = append(explanations, e)
+			wg.Done()
+		}
+	}()
+
+	wg.Wait()
 	fmt.Println("===== DONE EXPLAINING =====")
 
 	data, err := json.Marshal(explanations)
