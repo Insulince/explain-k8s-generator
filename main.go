@@ -1,128 +1,162 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/ioutil"
 	"log"
-	"math/rand"
 	"os/exec"
 	"strings"
 )
 
-func main() {
-	rawOut, err := exec.Command("bash", "-c", "kubectl explain 2>&1 | grep \"*\" | grep -vE \"(all|podpreset|cronjob|customresourcedefinition)\" | cut -c 5- | grep pods").Output()
-	if err != nil {
-		panic(err)
-	}
-	out := string(rawOut)
-	goodOut := removeBlankLinesStr(out)
-	lines := strings.Split(goodOut, "\n")
-	var resourceNames []string
-	for _, line := range lines {
-		items := strings.Split(line, " ")
-		resourceNames = append(resourceNames, items[0])
-	}
+const (
+	resourcesFile = "./resources.txt"
 
-	var resources []Resource
-	for _, resourceName := range resourceNames {
-		rawOut, err := exec.Command("kubectl", "explain", resourceName, "--recursive").Output()
-		if err != nil {
-			log.Println(string(rawOut))
-			panic(err)
-		}
-		out := string(rawOut)
-		goodOut := removeBlankLinesStr(out)
+	kubectl     = "kubectl"
+	explain     = "explain"
+	recursively = "--recursive"
+)
 
-		r := NewResource(resourceName, goodOut)
-		resources = append(resources, r)
-	}
-
-	o, err := json.Marshal(resources)
-	fmt.Println("const resources = " + string(o) + ";")
-}
-
-func removeBlankLinesStr(linesStr string) string {
-	lines := strings.Split(linesStr, "\n")
-	goodLines := removeBlankLines(lines)
-	goodLinesStr := strings.Join(goodLines, "\n")
-	return goodLinesStr
-}
-
-func removeBlankLines(lines []string) []string {
-	var goodLines []string
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-		goodLines = append(goodLines, line)
-	}
-	return goodLines
-}
-
-type Resource struct {
-	Name        string
-	Description string
-	Fields      []Field
+type Explanation struct {
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	Fields      []Field `json:"fields"`
 }
 
 type Field struct {
-	Name        string
-	FullName    string
-	Type        string
-	Explanation string
-	SubFields   []Field
+	Name        string  `json:"name"`
+	FullName    string  `json:"fullName"`
+	Type        string  `json:"type"`
+	Description string  `json:"description"`
+	Fields      []Field `json:"fields"`
 }
 
-func NewResource(name string, resourceString string) Resource {
-	description := ""
-	var fields []Field
+func main() {
+	fmt.Println("===== Beginning explanation process. Do NOT change kubectl contexts during this process. =====")
+	fmt.Println("--- This process was created on a v1.9.5 client against a v1.10.11 server. Results may very or not come back at all if your versions differ. ---")
+
+	resourceNames, err := loadResourceNames()
+	if err != nil {
+		log.Fatalln(err)
+	}
+	resourceNames = []string{"secret"}
+
+	var resources []Explanation
+	for _, rn := range resourceNames {
+		// TODO: Concurrency!
+		r, err := NewExplanation(rn)
+		if err != nil {
+			log.Fatalln(err)
+		}
+
+		resources = append(resources, r)
+	}
+	fmt.Println("===== DONE EXPLAINING =====")
+
+	data, err := json.Marshal(resources)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	explanations := string(data)
+
+	fmt.Println("JSON result:")
+	fmt.Println(explanations)
+}
+
+func getK8sExplanation(rn string) (string, error) {
+	fmt.Println("EXPLAINING \"" + rn + "\"...")
+
+	cmd := exec.Command(kubectl, explain, rn, recursively)
+	cmd.Stderr = &bytes.Buffer{}
+	stdout, err := cmd.Output()
+	if err != nil {
+		return "", errors.New(fmt.Sprintf("Error: %v|Stdout: %v|Stderr: %v", err, string(stdout), cmd.Stderr.(*bytes.Buffer).String()))
+	}
+	return removeBlankLines(string(stdout)), nil
+}
+
+func loadResourceNames() (resourceNames []string, err error) {
+	data, err := ioutil.ReadFile(resourcesFile)
+	if err != nil {
+		return nil, err
+	}
+	resourcesFileContents := removeBlankLines(string(data))
+	return strings.Split(resourcesFileContents, "\n"), nil
+}
+
+const (
+	descriptionLabel   = "DESCRIPTION:\n"
+	descriptionPadding = "     "
+
+	fieldsLabel   = "FIELDS:\n"
+	fieldsPadding = "   "
+
+	fieldLabel = "FIELD:"
+
+	resourceLabel = "RESOURCE:"
+)
+
+func NewExplanation(name string) (Explanation, error) {
+	ke, err := getK8sExplanation(name)
+	if err != nil {
+		return Explanation{}, err
+	}
 
 	// DESCRIPTION
-	if strings.Index(resourceString, "DESCRIPTION:\n") != 0 {
-		panic("description was not in expected location")
+	if !strings.HasPrefix(ke, descriptionLabel) {
+		return Explanation{}, errors.New("description section was not in expected location")
 	}
-	resourceString = resourceString[len("DESCRIPTION:\n"):]
-	if strings.Index(resourceString, "     ") != 0 {
-		panic("description contained no content")
+	ke = ke[len(descriptionLabel):]
+	if !strings.HasPrefix(ke, descriptionPadding) {
+		return Explanation{}, errors.New("description section needs at least one line, but found none")
 	}
-	resourceString = resourceString[5:]
-	description += resourceString[:strings.Index(resourceString, "\n")]
-	resourceString = resourceString[strings.Index(resourceString, "\n")+1:]
-	for strings.Index(resourceString, "     ") == 0 {
-		resourceString = resourceString[5:]
-		description += " " + resourceString[:strings.Index(resourceString, "\n")]
-		resourceString = resourceString[strings.Index(resourceString, "\n")+1:]
+	var descriptionLines []string
+	for strings.HasPrefix(ke, descriptionPadding) {
+		nextNewLineIndex := strings.Index(ke, "\n")
+		descriptionLines = append(descriptionLines, ke[len(descriptionPadding):nextNewLineIndex])
+		ke = ke[nextNewLineIndex+1:]
 	}
+	description := strings.Join(descriptionLines, " ")
 
 	// FIELDS
-	if strings.Index(resourceString, "FIELDS:\n") != 0 {
-		panic("fields was not in expected location")
+	if !strings.HasPrefix(ke, fieldsLabel) {
+		return Explanation{}, errors.New("fields section was not in expected location")
 	}
-	resourceString = resourceString[len("FIELDS:\n"):]
-	lines := strings.Split(resourceString, "\n")
-	var fmtLines []string
-	for _, line := range lines {
-		if strings.Index(line, "   ") != 0 {
-			panic("malformed field, not padded with 3 spaces")
+	ke = ke[len(fieldsLabel):]
+	if !strings.HasPrefix(ke, fieldsPadding) {
+		return Explanation{}, errors.New("fields section needs at least one line, but found none")
+	}
+	var fieldsLines []string
+	for strings.HasPrefix(ke, fieldsPadding) {
+		nextNewLineIndex := strings.Index(ke, "\n")
+		if nextNewLineIndex != -1 {
+			fieldsLines = append(fieldsLines, ke[len(fieldsPadding):nextNewLineIndex])
+			ke = ke[nextNewLineIndex+1:]
+		} else {
+			fieldsLines = append(fieldsLines, ke[len(fieldsPadding):])
+			ke = ""
 		}
-		fmtLine := Unshift(line)
-		fmtLines = append(fmtLines, fmtLine)
 	}
-	fieldsStr := strings.Join(fmtLines, "\n")
-	fields = ParseFields(name, fieldsStr)
+	if ke != "" {
+		return Explanation{}, errors.New("explanation string not exhausted when it was expected to have been")
+	}
+	fs := strings.Join(fieldsLines, "\n")
+	fields := ParseFields(name, fs)
 
-	return Resource{
+	e := Explanation{
 		Name:        name,
 		Description: description,
 		Fields:      fields,
 	}
+	return e, nil
 }
 
-func ParseFields(nameAcc string, fieldsStr string) []Field {
-	fmt.Println(rand.Float32())
+func ParseFields(fullNameAccumulator string, fs string) []Field {
 	var fields []Field
 
-	lines := strings.Split(fieldsStr, "\n")
+	lines := strings.Split(fs, "\n")
 	if strings.Index(lines[0], "   ") == 0 {
 		panic("first line starts with padding when it should not")
 	}
@@ -131,7 +165,7 @@ func ParseFields(nameAcc string, fieldsStr string) []Field {
 	for _, line := range lines {
 		if objMode {
 			if strings.Index(line, "   ") != 0 {
-				fields[len(fields)-1].SubFields = ParseFields(fields[len(fields)-1].FullName, removeBlankLinesStr(subFieldStr))
+				fields[len(fields)-1].Fields = ParseFields(fields[len(fields)-1].FullName, removeBlankLines(subFieldStr))
 				objMode = false
 				subFieldStr = ""
 			}
@@ -140,13 +174,14 @@ func ParseFields(nameAcc string, fieldsStr string) []Field {
 		if !objMode {
 			items := strings.Split(line, "\t")
 			name := items[0] // First item is the field name.
-			fullName := nameAcc + "." + name
+			fullName := fullNameAccumulator + "." + name
 			t := items[len(items)-1] // Last item is the type (there could be multiple spaces, hence the "len" approach).
 			f := Field{
 				Name:     name,
 				FullName: fullName,
 				Type:     t[1 : len(t)-1], // Trim off the "<" and ">" from the type.
 			}
+			fmt.Println("--- " + f.FullName)
 
 			if strings.Index(f.Type, "Object") != -1 {
 				objMode = true
@@ -154,17 +189,19 @@ func ParseFields(nameAcc string, fieldsStr string) []Field {
 
 			rawOut, err := exec.Command("kubectl", "explain", fullName).Output()
 			if err != nil {
+				log.Println(line)
+				log.Println(fullName)
 				log.Println(string(rawOut))
 				panic(err)
 			}
 			out := string(rawOut)
-			goodOut := removeBlankLinesStr(out)
+			goodOut := removeBlankLines(out)
 			description := extractDescription(goodOut)
-			f.Explanation = description
+			f.Description = description
 
 			fields = append(fields, f)
 		} else {
-			subFieldStr += Unshift(line) + "\n"
+			subFieldStr += line[len(fieldsPadding):] + "\n"
 		}
 	}
 
@@ -173,26 +210,25 @@ func ParseFields(nameAcc string, fieldsStr string) []Field {
 
 func extractDescription(explanation string) string {
 	lines := strings.Split(explanation, "\n")
-	simpleField := strings.Index(lines[0], "FIELD: ") == 0
-	lines = lines[2:] // Chop off the initial line (either FIELD or RESOURCE) and the DESCRIPTION line.
-	if simpleField {
+	firstLine := lines[0]
+	lines = lines[2:]                             // Chop off the initial line (either FIELD or RESOURCE) and the DESCRIPTION line.
+	if strings.HasPrefix(firstLine, fieldLabel) { // Simple field
 		var slines []string
 		for _, line := range lines {
-			slines = append(slines, line[5:])
+			slines = append(slines, line[len(descriptionPadding):])
 		}
 		return strings.Join(slines, " ")
-	} else {
+	} else if strings.HasPrefix(firstLine, resourceLabel) { // Complex field
 		var slines []string
 		for _, line := range lines {
-			if strings.Index(line, "     ") != 0 {
+			if !strings.HasPrefix(line, descriptionPadding) {
 				return strings.Join(slines, " ")
 			}
-			slines = append(slines, line[5:])
+			slines = append(slines, line[len(descriptionPadding):])
 		}
+	} else {
+		log.Println(lines)
+		panic("unrecognized field" + lines[0])
 	}
 	panic("???")
-}
-
-func Unshift(s string) string {
-	return s[3:]
 }
