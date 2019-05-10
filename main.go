@@ -14,23 +14,25 @@ import (
 const (
 	resourcesFile = "./resources.txt"
 
-	kubectl     = "kubectl"
-	explain     = "explain"
-	recursively = "--recursive"
+	kubectl   = "kubectl"
+	explain   = "explain"
+	recursive = "--recursive"
+
+	descriptionLabel   = "DESCRIPTION:\n"
+	descriptionPadding = "     "
+
+	fieldsLabel   = "FIELDS:\n"
+	fieldsPadding = "   "
+
+	resource = "Resource"
 )
 
 type Explanation struct {
-	Name        string  `json:"name"`
-	Description string  `json:"description"`
-	Fields      []Field `json:"fields"`
-}
-
-type Field struct {
-	Name        string  `json:"name"`
-	FullName    string  `json:"fullName"`
-	Type        string  `json:"type"`
-	Description string  `json:"description"`
-	Fields      []Field `json:"fields"`
+	Name        string        `json:"name"`
+	FullName    string        `json:"fullName"`
+	Type        string        `json:"type"`
+	Description string        `json:"description"`
+	Fields      []Explanation `json:"fields"`
 }
 
 func main() {
@@ -41,34 +43,37 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	resourceNames = []string{"secret"}
+	resourceNames = []string{"secret", "configmap"}
 
-	var resources []Explanation
+	var explanations []Explanation
 	for _, rn := range resourceNames {
 		// TODO: Concurrency!
-		r, err := NewExplanation(rn)
+		r, err := NewTopLevelExplanation(rn)
 		if err != nil {
 			log.Fatalln(err)
 		}
 
-		resources = append(resources, r)
+		explanations = append(explanations, r)
 	}
 	fmt.Println("===== DONE EXPLAINING =====")
 
-	data, err := json.Marshal(resources)
+	data, err := json.Marshal(explanations)
 	if err != nil {
 		log.Fatalln(err)
 	}
-	explanations := string(data)
+	explanationsJson := string(data)
 
 	fmt.Println("JSON result:")
-	fmt.Println(explanations)
+	fmt.Println(explanationsJson)
 }
 
-func getK8sExplanation(rn string) (string, error) {
-	fmt.Println("EXPLAINING \"" + rn + "\"...")
-
-	cmd := exec.Command(kubectl, explain, rn, recursively)
+func getK8sExplanation(rn string, recursively bool) (string, error) {
+	var cmd *exec.Cmd
+	if recursively {
+		cmd = exec.Command(kubectl, explain, rn, recursive)
+	} else {
+		cmd = exec.Command(kubectl, explain, rn)
+	}
 	cmd.Stderr = &bytes.Buffer{}
 	stdout, err := cmd.Output()
 	if err != nil {
@@ -86,20 +91,9 @@ func loadResourceNames() (resourceNames []string, err error) {
 	return strings.Split(resourcesFileContents, "\n"), nil
 }
 
-const (
-	descriptionLabel   = "DESCRIPTION:\n"
-	descriptionPadding = "     "
-
-	fieldsLabel   = "FIELDS:\n"
-	fieldsPadding = "   "
-
-	fieldLabel = "FIELD:"
-
-	resourceLabel = "RESOURCE:"
-)
-
-func NewExplanation(name string) (Explanation, error) {
-	ke, err := getK8sExplanation(name)
+func NewTopLevelExplanation(name string) (Explanation, error) {
+	fmt.Println("EXPLAINING \"" + name + "\"...")
+	ke, err := getK8sExplanation(name, true)
 	if err != nil {
 		return Explanation{}, err
 	}
@@ -143,92 +137,97 @@ func NewExplanation(name string) (Explanation, error) {
 		return Explanation{}, errors.New("explanation string not exhausted when it was expected to have been")
 	}
 	fs := strings.Join(fieldsLines, "\n")
-	fields := ParseFields(name, fs)
+	fields, err := ParseFields(name, fs)
+	if err != nil {
+		return Explanation{}, err
+	}
 
 	e := Explanation{
 		Name:        name,
+		FullName:    name,
+		Type:        resource,
 		Description: description,
 		Fields:      fields,
 	}
 	return e, nil
 }
 
-func ParseFields(fullNameAccumulator string, fs string) []Field {
-	var fields []Field
+func ParseFields(nameAcc string, fs string) ([]Explanation, error) {
+	if fs == "" {
+		return []Explanation{}, nil
+	}
 
 	lines := strings.Split(fs, "\n")
-	if strings.Index(lines[0], "   ") == 0 {
+	if strings.HasPrefix(lines[0], fieldsPadding) {
 		panic("first line starts with padding when it should not")
 	}
-	objMode := false
-	subFieldStr := ""
+
+	var fields []Explanation
+	var subFsAcc []string
 	for _, line := range lines {
-		if objMode {
-			if strings.Index(line, "   ") != 0 {
-				fields[len(fields)-1].Fields = ParseFields(fields[len(fields)-1].FullName, removeBlankLines(subFieldStr))
-				objMode = false
-				subFieldStr = ""
-			}
+		if strings.HasPrefix(line, fieldsPadding) {
+			subFsAcc = append(subFsAcc, line[len(fieldsPadding):])
+			continue
 		}
+		subFs := strings.Join(subFsAcc, "\n")
+		subFsAcc = []string{}
 
-		if !objMode {
-			items := strings.Split(line, "\t")
-			name := items[0] // First item is the field name.
-			fullName := fullNameAccumulator + "." + name
-			t := items[len(items)-1] // Last item is the type (there could be multiple spaces, hence the "len" approach).
-			f := Field{
-				Name:     name,
-				FullName: fullName,
-				Type:     t[1 : len(t)-1], // Trim off the "<" and ">" from the type.
-			}
-			fmt.Println("--- " + f.FullName)
-
-			if strings.Index(f.Type, "Object") != -1 {
-				objMode = true
-			}
-
-			rawOut, err := exec.Command("kubectl", "explain", fullName).Output()
+		if len(fields) > 0 {
+			previousFieldIndex := len(fields) - 1
+			subFields, err := ParseFields(fields[previousFieldIndex].FullName, subFs)
 			if err != nil {
-				log.Println(line)
-				log.Println(fullName)
-				log.Println(string(rawOut))
-				panic(err)
+				return nil, err
 			}
-			out := string(rawOut)
-			goodOut := removeBlankLines(out)
-			description := extractDescription(goodOut)
-			f.Description = description
-
-			fields = append(fields, f)
-		} else {
-			subFieldStr += line[len(fieldsPadding):] + "\n"
+			fields[previousFieldIndex].Fields = subFields
 		}
+
+		items := strings.Split(line, "\t")
+		if len(items) != 2 {
+			panic("expected 2 items per line, but found a different amount")
+		}
+
+		f := Explanation{
+			Name:     items[0],
+			FullName: nameAcc + "." + items[0],
+			Type:     strings.Trim(items[1], "<>"),
+		}
+		fmt.Println(" - " + f.FullName)
+		description, err := getDescription(f.FullName)
+		if err != nil {
+			panic(err)
+		}
+		f.Description = description
+
+		fields = append(fields, f)
+	}
+	if len(fields) > 0 {
+		lastFieldIndex := len(fields) - 1
+		subFs := strings.Join(subFsAcc, "\n")
+		subFields, err := ParseFields(fields[lastFieldIndex].FullName, subFs)
+		if err != nil {
+			return nil, err
+		}
+		fields[lastFieldIndex].Fields = subFields
 	}
 
-	return fields
+	return fields, nil
 }
 
-func extractDescription(explanation string) string {
-	lines := strings.Split(explanation, "\n")
-	firstLine := lines[0]
-	lines = lines[2:]                             // Chop off the initial line (either FIELD or RESOURCE) and the DESCRIPTION line.
-	if strings.HasPrefix(firstLine, fieldLabel) { // Simple field
-		var slines []string
-		for _, line := range lines {
-			slines = append(slines, line[len(descriptionPadding):])
-		}
-		return strings.Join(slines, " ")
-	} else if strings.HasPrefix(firstLine, resourceLabel) { // Complex field
-		var slines []string
-		for _, line := range lines {
-			if !strings.HasPrefix(line, descriptionPadding) {
-				return strings.Join(slines, " ")
-			}
-			slines = append(slines, line[len(descriptionPadding):])
-		}
-	} else {
-		log.Println(lines)
-		panic("unrecognized field" + lines[0])
+func getDescription(fullName string) (string, error) {
+	ke, err := getK8sExplanation(fullName, false)
+	if err != nil {
+		return "", err
 	}
-	panic("???")
+
+	lines := strings.Split(ke, "\n")
+	lines = lines[2:] // Chop off the initial line (either FIELD or RESOURCE) and the DESCRIPTION line.
+
+	var descriptionLines []string
+	for _, line := range lines {
+		if !strings.HasPrefix(line, descriptionPadding) {
+			break
+		}
+		descriptionLines = append(descriptionLines, line[len(descriptionPadding):])
+	}
+	return strings.Join(descriptionLines, " "), nil
 }
