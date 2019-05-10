@@ -43,7 +43,7 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	resourceNames = []string{"secret", "configmap"}
+	resourceNames = []string{"pod"}
 
 	var explanations []Explanation
 	for _, rn := range resourceNames {
@@ -159,7 +159,7 @@ func ParseFields(nameAcc string, fs string) ([]Explanation, error) {
 
 	lines := strings.Split(fs, "\n")
 	if strings.HasPrefix(lines[0], fieldsPadding) {
-		panic("first line starts with padding when it should not")
+		return nil, errors.New("first line starts with padding when it should not")
 	}
 
 	var fields []Explanation
@@ -183,7 +183,7 @@ func ParseFields(nameAcc string, fs string) ([]Explanation, error) {
 
 		items := strings.Split(line, "\t")
 		if len(items) != 2 {
-			panic("expected 2 items per line, but found a different amount")
+			return nil, errors.New("expected 2 items per line, but found a different amount")
 		}
 
 		f := Explanation{
@@ -194,7 +194,7 @@ func ParseFields(nameAcc string, fs string) ([]Explanation, error) {
 		fmt.Println(" - " + f.FullName)
 		description, err := getDescription(f.FullName)
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 		f.Description = description
 
