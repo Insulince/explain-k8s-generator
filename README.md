@@ -98,6 +98,8 @@ type Explanation struct {
 
 ## Usage
 
+NOTE: *This process was created on a v1.9.5 client against a v1.10.11 server. Results may vary or not come back at all if your versions differ.*
+
 To start, is up to you to provide a list of resource names in an input file. The default location for this file is `./in/resourceNames.txt` (can be changed with environment variables). This file should contain *only* valid k8s resource names separated by newlines.
 
 Once that is set up, you are ready to run the application which will perform a **ton** of `kubectl explain` requests against your **current kubectl context**. Please be sure you are configured to not damage your server with this many requests. I set up a local k8s cluster and context to run these commands against so I wouldn't have to worry about harming anything.

@@ -50,7 +50,7 @@ func (ke kubectlExplainer) Explain(resourceNames []string) []explainer.Explanati
 	}(time.Now())
 
 	log.Println("===== Beginning explanation process. Do NOT change kubectl contexts during this process. =====")
-	log.Println("--- This process was created on a v1.9.5 client against a v1.10.11 server. Results may very or not come back at all if your versions differ. ---")
+	log.Println("--- This process was created on a v1.9.5 client against a v1.10.11 server. Results may vary or not come back at all if your versions differ. ---")
 
 	explanationCollector := make(chan explainer.Explanation)
 	var wg sync.WaitGroup
