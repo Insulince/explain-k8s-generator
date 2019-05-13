@@ -1,4 +1,5 @@
 /.idea/**
 /bin/**
-/output.json
-*.iml
+/out/**
+!/out/.gitkeep
+**.iml

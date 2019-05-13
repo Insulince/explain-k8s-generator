@@ -1,8 +1,10 @@
-package main
+package util
 
-import "strings"
+import (
+	"strings"
+)
 
-func removeBlankLines(data string) string {
+func RemoveBlankLines(data string) string {
 	var lines []string
 	for _, line := range strings.Split(data, "\n") {
 		if line == "" {
