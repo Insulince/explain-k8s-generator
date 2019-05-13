@@ -40,7 +40,7 @@ FIELDS:
 ```
 (shortened for brevity)
 
-And if `pod.metadata` had any fields of type `Object`, we could 3`kubectl explain` those as well. In fact, we can get a high level overview of everything in the `pod` resource with:
+And if `pod.metadata` had any fields of type `Object`, we could `kubectl explain` those as well. In fact, we can get a high level overview of everything in the `pod` resource with:
 
 `kubectl explain pods --recursive`
 
@@ -70,7 +70,7 @@ FIELDS:
 
 So, if you notice, every resource can be explained. Every resource contains a set of fields that can be explained. Every field that is of type `Object` (or `[]Object`) contains sub-fields that can then also be explained. This is the recursive structure that emerges from k8s resources.
 
-Now, what if someone was crazy enough to write an application that would programmatically step through a list of resources, get the explanation of each one (and all of its sub-field's explanations), parse through the *whitespace* in the resulting explanations to determine how deep the recursion goes, then erect a custom recursive structure through the use of go structs with the intent of encoding it into JSON for further consumption downstream in say, a [UI](https://www.github.com/Insulince/explain-k8s-ui) of some sort. That would be crazy right??? Well, it certainly isn't sane. But it's done, so sue me.
+Now, what if someone was crazy enough to write an application that would programmatically step through a list of resources, get the explanation of each one (and all of its sub-field's explanations), parse through the *whitespace* in the resulting explanations to determine how deep the recursion goes, then erect a custom recursive structure through the use of go structs with the intent of encoding it into JSON for further consumption downstream in, say, a [UI](https://www.github.com/Insulince/explain-k8s-ui) of some sort. That would be crazy right??? Well, it certainly isn't sane. But it's done, so sue me.
 
 ## Explanation Model
 
